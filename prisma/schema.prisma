@@ -1,0 +1,170 @@
+// Life Calendar — data model
+// See /Users/spark/Desktop/repos/life-calendar-project-structure.md for build notes.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Circle {
+  FAMILY
+  FRIENDS
+}
+
+enum AvailabilityStatus {
+  OPEN
+  BUSY
+  TRAVELLING
+}
+
+enum ReactionEmoji {
+  HEART
+  LAUGH
+  WOW
+  SAD
+  FIRE
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  displayName   String
+  avatarUrl     String?
+  isOwner       Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+
+  memberships  CircleMembership[]
+  dayEntries   DayEntry[]
+  availability Availability[]
+  reactions    Reaction[]
+  invitesSent  Invite[]
+  accounts     Account[]
+  sessions     Session[]
+}
+
+// Required by @auth/prisma-adapter. Account is unused while the only
+// provider is magic-link email, but the adapter's types expect it.
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+// Email-provider sign-in requires database sessions (no JWT support).
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model CircleMembership {
+  id     String @id @default(cuid())
+  userId String
+  circle Circle
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, circle])
+}
+
+model DayEntry {
+  id        String   @id @default(cuid())
+  authorId  String
+  date      DateTime @db.Date
+  note      String?
+  createdAt DateTime @default(now())
+
+  // Chosen once per upload batch (PRD §3.3) — Family / Friends / Both.
+  visibleToFamily  Boolean @default(true)
+  visibleToFriends Boolean @default(true)
+
+  author    User       @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  photos    Photo[]
+  reactions Reaction[]
+
+  @@index([date])
+  @@index([authorId, date])
+}
+
+model Photo {
+  id         String @id @default(cuid())
+  dayEntryId String
+
+  // R2 object keys (bucket is private), not public URLs — resolved to a
+  // short-lived viewable URL server-side via getPresignedViewUrl.
+  storageUrl   String
+  thumbnailUrl String
+  order        Int @default(0)
+
+  dayEntry DayEntry @relation(fields: [dayEntryId], references: [id], onDelete: Cascade)
+
+  @@index([dayEntryId])
+}
+
+model Availability {
+  id     String             @id @default(cuid())
+  userId String
+  date   DateTime           @db.Date
+  status AvailabilityStatus
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+  @@index([date])
+}
+
+model Reaction {
+  id         String        @id @default(cuid())
+  dayEntryId String
+  userId     String
+  emoji      ReactionEmoji
+
+  dayEntry DayEntry @relation(fields: [dayEntryId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([dayEntryId, userId])
+}
+
+model Invite {
+  id          String    @id @default(cuid())
+  email       String
+  circles     Circle[]
+  token       String    @unique
+  invitedById String
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  invitedBy User @relation(fields: [invitedById], references: [id], onDelete: Cascade)
+
+  @@index([token])
+}

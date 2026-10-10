@@ -1,0 +1,230 @@
+// tutor-app/prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// TUTORS
+// ---------------------------------------------------------------------------
+
+model Tutor {
+  id          String    @id @default(cuid())
+  name        String
+  phone       String?
+  hourlyRate  Float
+  payPeriod   PayPeriod @default(FORTNIGHTLY)
+  bankBsb     String?
+  bankAccount String?
+  bankName    String?   // account holder name for bank transfer
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+
+  classSlotsDefault ClassSlot[]      // tutor's default assignment on a slot
+  sessions          Session[]        // actual session instances (may override slot default)
+  payPeriods        TutorPayPeriod[]
+}
+
+// ---------------------------------------------------------------------------
+// STUDENTS
+// ---------------------------------------------------------------------------
+
+model Student {
+  id           String      @id @default(cuid())
+  name         String
+  yearLevel    Int?
+  phone        String?     // parent contact
+  sessionRate  Float?      // for 1:1 students; null for group-only
+  type         StudentType
+  active       Boolean     @default(true)
+  createdAt    DateTime    @default(now())
+
+  enrollments   Enrollment[]
+  attendance    Attendance[]
+  credits       StudentCredit[]
+  incomeRecords IncomeRecord[]
+}
+
+// ---------------------------------------------------------------------------
+// TERMS & CLASS SLOTS
+// ---------------------------------------------------------------------------
+
+model Term {
+  id        String   @id @default(cuid())
+  name      String   // e.g. "Jun ~ Oct '26"
+  startDate DateTime
+  endDate   DateTime
+  createdAt DateTime @default(now())
+
+  classSlots ClassSlot[]
+}
+
+// A ClassSlot is a recurring weekly class within a term.
+// Generating a term creates one Session per classSlot per week.
+model ClassSlot {
+  id         String    @id @default(cuid())
+  termId     String
+  term       Term      @relation(fields: [termId], references: [id])
+  type       ClassType // GROUP | PRIVATE
+  label      String    // e.g. "Level 9 MES", "Math 1:1"
+  dayOfWeek  Int       // 1=Mon, 2=Tue, ... 6=Sat
+  startTime  String    // "16:30" (24h)
+  endTime    String    // "19:30" (24h)
+  tutorId    String
+  tutor      Tutor     @relation(fields: [tutorId], references: [id])
+
+  enrollments Enrollment[]
+  sessions    Session[]
+  credits     StudentCredit[]
+}
+
+// ---------------------------------------------------------------------------
+// ENROLLMENTS
+// ---------------------------------------------------------------------------
+
+// Links a student to a class slot for a term.
+// subjects is a free string e.g. "MES", "M", "ES" — keep it simple.
+model Enrollment {
+  id          String    @id @default(cuid())
+  studentId   String
+  student     Student   @relation(fields: [studentId], references: [id])
+  classSlotId String
+  classSlot   ClassSlot @relation(fields: [classSlotId], references: [id])
+  subjects    String?   // "MES" | "M" | "ES" | null
+  startDate   DateTime? // for mid-term joiners
+  createdAt   DateTime  @default(now())
+
+  @@unique([studentId, classSlotId])
+}
+
+// ---------------------------------------------------------------------------
+// SESSIONS & ATTENDANCE
+// ---------------------------------------------------------------------------
+
+// A Session is one weekly instance of a ClassSlot on a specific date.
+// tutorId can differ from classSlot.tutorId (tutor swap for this week).
+model Session {
+  id          String            @id @default(cuid())
+  classSlotId String
+  classSlot   ClassSlot         @relation(fields: [classSlotId], references: [id])
+  date        DateTime          // the actual date of this session
+  tutorId     String
+  tutor       Tutor             @relation(fields: [tutorId], references: [id])
+  tutorStatus TutorStatus       @default(WORKED) // WORKED | OFF
+  hours       Float?            // override slot duration if needed (e.g. short session)
+  createdAt   DateTime          @default(now())
+
+  attendance  Attendance[]
+}
+
+model Attendance {
+  id        String           @id @default(cuid())
+  sessionId String
+  session   Session          @relation(fields: [sessionId], references: [id])
+  studentId String
+  student   Student          @relation(fields: [studentId], references: [id])
+  status    AttendanceStatus // PRESENT | ABSENT | LATE_CANCEL | CREDIT_USED
+
+  sourceCredit   StudentCredit? @relation("CreditUsed")   // if CREDIT_USED
+  generatedCredit StudentCredit? @relation("CreditSource") // if LATE_CANCEL
+
+  @@unique([sessionId, studentId])
+}
+
+// ---------------------------------------------------------------------------
+// STUDENT CREDITS
+// ---------------------------------------------------------------------------
+
+// Generated when a student marks p/x (LATE_CANCEL).
+// Consumed when they attend a future session using the credit (CREDIT_USED).
+model StudentCredit {
+  id                 String    @id @default(cuid())
+  studentId          String
+  student            Student   @relation(fields: [studentId], references: [id])
+  classSlotId        String
+  classSlot          ClassSlot @relation(fields: [classSlotId], references: [id])
+  sourceAttendanceId String    @unique
+  sourceAttendance   Attendance @relation("CreditSource", fields: [sourceAttendanceId], references: [id])
+  usedByAttendanceId String?   @unique
+  usedByAttendance   Attendance? @relation("CreditUsed", fields: [usedByAttendanceId], references: [id])
+  createdAt          DateTime  @default(now())
+
+  // usedByAttendanceId null = credit still available
+}
+
+// ---------------------------------------------------------------------------
+// TUTOR PAY PERIODS
+// ---------------------------------------------------------------------------
+
+// A fortnightly pay run for one tutor.
+// totalHours and totalAmount are calculated and stored at time of payment.
+model TutorPayPeriod {
+  id          String    @id @default(cuid())
+  tutorId     String
+  tutor       Tutor     @relation(fields: [tutorId], references: [id])
+  periodStart DateTime
+  periodEnd   DateTime
+  totalHours  Float
+  totalAmount Float
+  status      PayStatus @default(PENDING)
+  paidAt      DateTime?
+  note        String?   // e.g. "paid online 24 April"
+  createdAt   DateTime  @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// INCOME & EXPENSES
+// ---------------------------------------------------------------------------
+
+model IncomeRecord {
+  id            String      @id @default(cuid())
+  studentId     String?     // null = anonymous / walk-in
+  student       Student?    @relation(fields: [studentId], references: [id])
+  amount        Float
+  date          DateTime
+  paymentMethod PayMethod   // CASH | BANK_TRANSFER
+  paymentType   PaymentType // TERM | TRIAL | PARTIAL
+  note          String?
+  createdAt     DateTime    @default(now())
+}
+
+model ExpenseRecord {
+  id        String          @id @default(cuid())
+  amount    Float
+  date      DateTime
+  category  ExpenseCategory // RENT | SUPPLIES | SOFTWARE | OTHER
+  note      String?
+  createdAt DateTime        @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// HANDOVER LOG
+// ---------------------------------------------------------------------------
+
+model Note {
+  id        String   @id @default(cuid())
+  content   String
+  tag       NoteTag  // ENQUIRY | PAYMENT | SICK | TUTOR | GENERAL
+  actioned  Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// ENUMS
+// ---------------------------------------------------------------------------
+
+enum PayPeriod        { WEEKLY FORTNIGHTLY }
+enum ClassType        { GROUP PRIVATE }
+enum StudentType      { GROUP PRIVATE BOTH }
+enum AttendanceStatus { PRESENT ABSENT LATE_CANCEL CREDIT_USED }
+enum TutorStatus      { WORKED OFF }
+enum PayStatus        { PENDING PAID }
+enum PayMethod        { CASH BANK_TRANSFER }
+enum PaymentType      { TERM TRIAL PARTIAL }
+enum ExpenseCategory  { RENT SUPPLIES SOFTWARE OTHER }
+enum NoteTag          { ENQUIRY PAYMENT SICK TUTOR GENERAL }
